@@ -27,6 +27,7 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 ENV/
 
 # IDE
@@ -43,3 +44,9 @@ ENV/
 .Trashes
 ehthumbs.db
 Thumbs.db 
+
+# Local environment overrides
+.env
+
+# Downloaded MNIST dataset (train.py downloads it on first run)
+MNIST_data/
