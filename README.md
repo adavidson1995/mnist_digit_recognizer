@@ -2,7 +2,7 @@
 
 A small end-to-end machine learning app: draw a digit (0–9) in your browser and a convolutional neural network trained on MNIST predicts which number you wrote.
 
-Built as the foundation project for my application to the ML Institute. The model is deliberately simple; the point is the full path from training a model, to serving it behind an API, to using it from a web frontend.
+Built as the foundation project for [the ML Institute](https://ml.institute). The model is deliberately simple; the point is the full path from training a model, to serving it behind an API, to using it from a web frontend.
 
 ## What it does
 
