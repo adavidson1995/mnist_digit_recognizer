@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mnist}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mnist}
+      POSTGRES_DB: ${POSTGRES_DB:-mnist_predictions}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  model:
+    build: ./model
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mnist}:${POSTGRES_PASSWORD:-mnist}@db:5432/${POSTGRES_DB:-mnist_predictions}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build: ./app
+    environment:
+      API_URL: http://model:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - model
+
+volumes:
+  pgdata:
