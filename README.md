@@ -2,14 +2,17 @@
 
 A small end-to-end machine learning app: draw a digit (0–9) in your browser and a convolutional neural network trained on MNIST predicts which number you wrote.
 
-Built as the foundation project for [the ML Institute](https://ml.institute). The model is deliberately simple; the point is the full path from training a model, to serving it behind an API, to using it from a web frontend.
+![Drawing digits in the app and getting predictions](docs/demo.gif)
+
+Built as the foundation project for [the ML Institute](https://ml.institute). The model is deliberately simple; the point is the full path from training a model, to serving it behind an API, to using it from a web frontend, with every prediction logged to a database.
 
 ## What it does
 
 1. You draw a digit on a 280×280 canvas in a Streamlit web app.
 2. When you click **Predict**, the drawing is converted to grayscale, resized to 28×28 (the MNIST input size) and sent to a FastAPI backend.
-3. The backend runs the image through a PyTorch CNN and returns the predicted digit with a confidence score.
-4. You can enter the true digit and click **Submit** to add the result to a history table of your recent attempts.
+3. The backend runs the image through a PyTorch CNN, saves the prediction to PostgreSQL and returns the predicted digit with a confidence score.
+4. You enter the digit you actually drew and click **Submit** to save it as the true label.
+5. A history table shows your 50 most recent predictions and their true labels, read from the database.
 
 ## How it works
 
@@ -40,69 +43,77 @@ Built as the foundation project for [the ML Institute](https://ml.institute). Th
 | Linear | 2304 → 100, ReLU, dropout |
 | Linear | 100 → 10, log-softmax |
 
-It is trained by `model/train.py` for 10 epochs with SGD (learning rate 0.01, momentum 0.5, batch size 64). Inputs are normalised with the standard MNIST mean and standard deviation (0.1307, 0.3081). The script prints accuracy on the 10,000-image MNIST test set when training finishes.
+It is trained by `model/train.py` for 10 epochs with SGD (learning rate 0.01, momentum 0.5, batch size 64). Inputs are normalised with the standard MNIST mean and standard deviation (0.1307, 0.3081). The script prints accuracy on the 10,000-image MNIST test set when training finishes and saves the weights to `model/mnist_cnn.pth`, where the backend loads them from.
 
 ### The API
 
 | Endpoint | Description |
 |---|---|
-| `POST /predict` | Body: `{"image": <28×28 nested list of floats in [0, 1]>, "true_label": <optional int>}`. Returns `{"prediction": int, "confidence": float}`. If `true_label` is given, the prediction is saved to PostgreSQL. |
-| `GET /history` | Returns the 50 most recent predictions saved in the database. |
+| `POST /predict` | Body: `{"image": <28×28 nested list of floats in [0, 1]>, "true_label": <optional int>}`. Saves the prediction and returns `{"id": int, "prediction": int, "confidence": float}`. |
+| `PATCH /predictions/{id}` | Body: `{"true_label": <int 0–9>}`. Saves the true label for an earlier prediction. |
+| `GET /history` | Returns the 50 most recent predictions, newest first. |
 
 While the backend is running, interactive API docs are at http://localhost:8000/docs.
 
-## Running it locally
+### The database
 
-### Prerequisites
+Each prediction is one row in the `predictions` table: `id`, `timestamp` (UTC), `predicted_digit` and `true_label` (empty until you submit it). The table is created by `db/init.sql` under Docker, and by the backend on startup if it doesn't exist yet.
 
-- Python 3.10
-- PostgreSQL running locally (the backend connects to it when it starts)
+## Running it with Docker
 
-### 1. Clone the repo
+You need [Docker](https://docs.docker.com/get-docker/) with Docker Compose.
 
 ```bash
 git clone https://github.com/adavidson1995/ML_institute_mnist_foundation.git
 cd ML_institute_mnist_foundation
+docker compose up --build
 ```
 
-### 2. Create the database
+Open http://localhost:8501, draw a digit and click **Predict**.
+
+This starts three containers: PostgreSQL (`db`), the FastAPI backend (`model`, on port 8000) and the Streamlit frontend (`app`, on port 8501). Predictions are kept in a Docker volume, so they survive restarts. To change the database name, user or password, copy `.env.example` to `.env` and edit it before the first `docker compose up`.
+
+## Running it without Docker
+
+### Prerequisites
+
+- Python 3.10 or 3.11 (the pinned numpy 1.24 has no builds for 3.12 or later)
+- PostgreSQL running locally
+
+### 1. Create the database
 
 ```bash
 createdb mnist_predictions
 export DATABASE_URL=postgresql://<your-postgres-user>@localhost:5432/mnist_predictions
 ```
 
-The `predictions` table is created automatically the first time the backend starts.
+The backend creates the `predictions` table when it starts.
 
-### 3. Start the backend
+### 2. Start the backend
 
 ```bash
 cd model
-python3.10 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt sqlalchemy psycopg2-binary pytz
-
-# Use the trained weights from the repo root...
-cp ../mnist_cnn.pth .
-# ...or train your own (downloads MNIST and writes mnist_cnn.pth here):
-# python train.py
-
+pip install -r requirements.txt
 uvicorn api:app --port 8000
 ```
 
-### 4. Start the frontend
+The trained weights (`model/mnist_cnn.pth`) are included. To retrain them, run `python train.py` in the same folder. It downloads MNIST into `MNIST_data/` on the first run.
+
+### 3. Start the frontend
 
 In a second terminal:
 
 ```bash
 cd app
-python3.10 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open http://localhost:8501, draw a digit and click **Predict**. The sidebar holds the backend URL (default `http://localhost:8000/predict`).
+Open http://localhost:8501. The frontend looks for the backend at `http://localhost:8000` by default. You can change that in the sidebar or with the `API_URL` environment variable.
 
 ### Calling the API directly
 
@@ -118,17 +129,21 @@ curl -X POST http://localhost:8000/predict \
 .
 ├── app/                  # Streamlit frontend
 │   ├── app.py            # Drawing canvas, prediction display, history table
+│   ├── Dockerfile
 │   └── requirements.txt
 ├── model/                # Model and FastAPI backend
 │   ├── model.py          # MNISTNet CNN definition
 │   ├── train.py          # Training and test-set evaluation
 │   ├── inference.py      # Helpers for loading the model and predicting
-│   ├── api.py            # FastAPI app: /predict and /history
+│   ├── api.py            # FastAPI app: /predict, /predictions/{id}, /history
 │   ├── database.py       # SQLAlchemy model and PostgreSQL connection
+│   ├── mnist_cnn.pth     # Trained model weights
+│   ├── Dockerfile
 │   └── requirements.txt
-├── db/init.sql           # Placeholder for database setup
-├── docker-compose.yml    # Placeholder for containerised deployment
-└── mnist_cnn.pth         # Trained model weights
+├── db/init.sql           # Creates the predictions table in the Postgres container
+├── docker-compose.yml    # Runs the database, backend and frontend together
+├── .env.example          # Database settings for docker-compose
+└── docs/demo.gif         # The demo recording above
 ```
 
 ## Tech stack
@@ -136,11 +151,7 @@ curl -X POST http://localhost:8000/predict \
 - **Model:** PyTorch, torchvision
 - **Backend:** FastAPI, Uvicorn, SQLAlchemy, PostgreSQL
 - **Frontend:** Streamlit, streamlit-drawable-canvas
-
-## Not done yet
-
-- **Docker.** `docker-compose.yml`, the Dockerfiles and `db/init.sql` are empty placeholders; the app has to be run locally as described above.
-- **Saving history to the database.** The history table in the frontend only lasts for your browser session. The backend can save predictions to PostgreSQL, but the frontend doesn't send `true_label` yet, so nothing is written to the database.
+- **Deployment:** Docker, Docker Compose
 
 ## License
 
