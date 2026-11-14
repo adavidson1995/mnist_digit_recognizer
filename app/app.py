@@ -1,5 +1,4 @@
-import datetime
-import io
+import os
 
 import numpy as np
 import requests
@@ -9,6 +8,11 @@ from streamlit_drawable_canvas import st_canvas
 
 st.set_page_config(page_title="Digit Recognizer", layout="centered")
 st.title("Digit Recognizer")
+
+# Sidebar for API URL (docker-compose sets API_URL to the backend container)
+api_url = st.sidebar.text_input(
+    "FastAPI URL", os.getenv("API_URL", "http://localhost:8000")
+).rstrip("/")
 
 # Canvas for drawing
 drawing_mode = "freedraw"
@@ -32,6 +36,10 @@ def preprocess(img_data):
     # Convert to grayscale by taking the mean of RGB channels
     img = np.mean(img_data[:, :, :3], axis=2)
 
+    # Nothing drawn yet
+    if img.max() == 0:
+        return None
+
     # Normalize to [0, 1]
     img = img / 255.0
 
@@ -43,55 +51,66 @@ def preprocess(img_data):
     return img_array.tolist()
 
 
-# Sidebar for API URL
-api_url = st.sidebar.text_input("FastAPI URL", "http://localhost:8000/predict")
+def call_api(method, path, **kwargs):
+    try:
+        response = requests.request(method, f"{api_url}{path}", timeout=10, **kwargs)
+    except requests.ConnectionError:
+        st.error(f"Can't reach the API at {api_url}. Is the backend running?")
+        return None
+    if response.status_code != 200:
+        st.error(f"Request failed: {response.text}")
+        return None
+    return response.json()
 
-# Prediction and UI
-prediction = None
-confidence = None
-img_array = (
-    preprocess(canvas_result.image_data)
-    if canvas_result.image_data is not None
-    else None
-)
 
-if st.button("Predict") and img_array is not None:
-    with st.spinner("Predicting..."):
-        response = requests.post(api_url, json={"image": img_array})
-        if response.status_code == 200:
-            result = response.json()
-            prediction = result["prediction"]
-            confidence = result["confidence"]
-        else:
-            st.error(f"Prediction failed: {response.text}")
+img_array = preprocess(canvas_result.image_data)
 
-if prediction is not None:
-    st.markdown(f"**Prediction:** {prediction}")
-    st.markdown(f"**Confidence:** {confidence*100:.2f}%")
+# Streamlit reruns this script on every click, so the latest prediction is kept
+# in session state rather than in a local variable
+if st.button("Predict"):
+    if img_array is None:
+        st.warning("Draw a digit first.")
+    else:
+        with st.spinner("Predicting..."):
+            result = call_api("POST", "/predict", json={"image": img_array})
+        if result is not None:
+            st.session_state["result"] = result
 
-# True label input
-true_label = st.number_input(
-    "True label (0-9)",
-    min_value=0,
-    max_value=9,
-    step=1,
-    value=prediction if prediction is not None else 0,
-)
+result = st.session_state.get("result")
+if result is not None:
+    st.markdown(f"**Prediction:** {result['prediction']}")
+    st.markdown(f"**Confidence:** {result['confidence']*100:.2f}%")
 
-# History table (stored in session state)
-if "history" not in st.session_state:
-    st.session_state["history"] = []
-
-if st.button("Submit") and prediction is not None:
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state["history"].insert(
-        0, {"timestamp": timestamp, "pred": prediction, "label": true_label}
+    # True label input (keyed by prediction id so it resets for each new prediction)
+    true_label = st.number_input(
+        "True label (0-9)",
+        min_value=0,
+        max_value=9,
+        step=1,
+        value=result["prediction"],
+        key=f"true_label_{result['id']}",
     )
-    # Limit history to 50 rows
-    st.session_state["history"] = st.session_state["history"][:50]
 
-# Display history
-table = st.session_state["history"]
-if table:
+    if st.button("Submit"):
+        saved = call_api(
+            "PATCH",
+            f"/predictions/{result['id']}",
+            json={"true_label": int(true_label)},
+        )
+        if saved is not None:
+            st.success("Saved.")
+
+# History table (latest 50 predictions from the database)
+history = call_api("GET", "/history")
+if history:
     st.markdown("### History")
-    st.table(table)
+    st.table(
+        [
+            {
+                "Time (UTC)": row["timestamp"][:19].replace("T", " "),
+                "Predicted": row["predicted_digit"],
+                "True label": "" if row["true_label"] is None else row["true_label"],
+            }
+            for row in history
+        ]
+    )

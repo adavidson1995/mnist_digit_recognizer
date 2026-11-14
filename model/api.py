@@ -8,7 +8,7 @@ import torch
 import torchvision.transforms as transforms
 from database import Prediction, get_db
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from model import MNISTNet
@@ -22,7 +22,11 @@ app = FastAPI()
 
 class PredictRequest(BaseModel):
     image: list  # Expecting a 28x28 nested list (grayscale)
-    true_label: int | None = None  # Optional true label
+    true_label: int | None = Field(default=None, ge=0, le=9)  # Optional true label
+
+
+class LabelRequest(BaseModel):
+    true_label: int = Field(ge=0, le=9)
 
 
 class PredictionOut(BaseModel):
@@ -60,21 +64,20 @@ transform = transforms.Compose(
 
 @app.post("/predict")
 def predict(req: PredictRequest, db: Session = Depends(get_db)):
+    # Convert input to numpy array and check shape
     try:
-        # Convert input to numpy array and check shape
         arr = np.array(req.image, dtype=np.float32)
-        logger.info(f"Input shape: {arr.shape}")
-        logger.info(f"Input range: [{arr.min()}, {arr.max()}]")
+    except ValueError:
+        arr = None
+    if arr is None or arr.shape != (28, 28):
+        raise HTTPException(
+            status_code=400, detail="Input must be 28x28 grayscale image."
+        )
+    logger.info(f"Input range: [{arr.min()}, {arr.max()}]")
 
-        if arr.shape != (28, 28):
-            raise HTTPException(
-                status_code=400, detail="Input must be 28x28 grayscale image."
-            )
-
+    try:
         # Normalize and add batch/channel dims
         tensor = transform(arr).unsqueeze(0)  # Shape: [1, 1, 28, 28]
-        logger.info(f"Tensor shape: {tensor.shape}")
-        logger.info(f"Tensor range: [{tensor.min()}, {tensor.max()}]")
 
         with torch.no_grad():
             output = model(tensor)
@@ -83,24 +86,39 @@ def predict(req: PredictRequest, db: Session = Depends(get_db)):
             predicted_digit = int(pred.item())
             confidence = float(conf.item())
 
-            logger.info(f"Raw output: {output[0].tolist()}")
-            logger.info(f"Probabilities: {probs[0].tolist()}")
-
-            # Only log prediction to database if true_label is provided
-            if req.true_label is not None:
-                prediction = Prediction(
-                    predicted_digit=predicted_digit, true_label=req.true_label
-                )
-                db.add(prediction)
-                db.commit()
-
-            return {"prediction": predicted_digit, "confidence": confidence}
+        logger.info(f"Probabilities: {probs[0].tolist()}")
     except Exception as e:
         logger.error(f"Error during prediction: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+    # Log every prediction; the true label can be added later via PATCH
+    prediction = Prediction(predicted_digit=predicted_digit, true_label=req.true_label)
+    db.add(prediction)
+    db.commit()
+    db.refresh(prediction)
+
+    return {
+        "id": prediction.id,
+        "prediction": predicted_digit,
+        "confidence": confidence,
+    }
+
+
+@app.patch("/predictions/{prediction_id}", response_model=PredictionOut)
+def set_true_label(
+    prediction_id: int, req: LabelRequest, db: Session = Depends(get_db)
+):
+    prediction = db.get(Prediction, prediction_id)
+    if prediction is None:
+        raise HTTPException(status_code=404, detail="Prediction not found.")
+
+    prediction.true_label = req.true_label
+    db.commit()
+    db.refresh(prediction)
+    return prediction
 
 
 @app.get("/history", response_model=List[PredictionOut])
 def get_history(db: Session = Depends(get_db)):
     # Return the latest 50 predictions
-    return db.query(Prediction).order_by(Prediction.timestamp.desc()).limit(50).all()
+    return db.query(Prediction).order_by(Prediction.id.desc()).limit(50).all()
