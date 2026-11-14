@@ -1,14 +1,12 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
-import pytz
-from sqlalchemy import Column, DateTime, Integer, String, create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Column, DateTime, Integer, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 # Get database URL from environment variable or use default
 DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://alexanderdavidson@localhost:5432/mnist_predictions"
+    "DATABASE_URL", "postgresql://localhost:5432/mnist_predictions"
 )
 
 # Create SQLAlchemy engine
@@ -21,15 +19,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-def get_local_time():
-    return datetime.utcnow()
+def get_utc_time():
+    # Timezone-aware, so Postgres stores the right instant whatever its TimeZone setting
+    return datetime.now(timezone.utc)
 
 
 class Prediction(Base):
     __tablename__ = "predictions"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime(timezone=True), default=get_local_time)
+    timestamp = Column(DateTime(timezone=True), default=get_utc_time)
     predicted_digit = Column(Integer)
     true_label = Column(
         Integer, nullable=True
