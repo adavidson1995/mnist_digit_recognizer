@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -46,7 +48,9 @@ def main():
     for epoch in range(1, 11):
         train(model, device, train_loader, optimizer, epoch)
 
-    torch.save(model.state_dict(), "mnist_cnn.pth")
+    # Save next to api.py, which is where the backend loads the weights from
+    model_path = os.path.join(os.path.dirname(__file__), "mnist_cnn.pth")
+    torch.save(model.state_dict(), model_path)
 
     # Evaluate on test set
     test_dataset = datasets.MNIST(
