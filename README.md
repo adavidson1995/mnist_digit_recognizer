@@ -64,8 +64,8 @@ Each prediction is one row in the `predictions` table: `id`, `timestamp` (UTC), 
 You need [Docker](https://docs.docker.com/get-docker/) with Docker Compose.
 
 ```bash
-git clone https://github.com/adavidson1995/ML_institute_mnist_foundation.git
-cd ML_institute_mnist_foundation
+git clone https://github.com/alexrdavidson/mnist_digit_recognizer.git
+cd mnist_digit_recognizer
 docker compose up --build
 ```
 
